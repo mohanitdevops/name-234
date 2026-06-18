@@ -1,19 +1,25 @@
 # Starter pipeline
 # Start with a minimal pipeline that you can customize to build and deploy your code.
 # Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+# https://aka.ms
 
 trigger:
-- main
+  - main
 
 pool:
   name: Default
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+jobs:
+  - job: RunScripts
+    displayName: 'Execute My Scripts'
+    steps:
+      - script: |
+          echo "Reading UI Pipeline Variable..."
+          echo "The value of mohan is: $(mohan)"
+        displayName: 'Run a one-line script'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+      - script: |
+          echo "Add other tasks to build, test, and deploy your project."
+          echo "See https://aka.ms"
+          echo "Accessing UI Variable in multi-line script: $(mohan)"
+        displayName: 'Run a multi-line script'
