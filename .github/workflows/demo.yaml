@@ -1,24 +1,38 @@
-name: Simple Workflow Demo
+name: Build and Run Docker Locally
 
-# Trigger: Run this workflow every time code is pushed to the main branch
 on:
   push:
     branches:
       - main
 
 jobs:
-  Hello-Job:
-    # Environment: Runs on GitHub's cloud-hosted Linux machine
+  Docker-Workflow:
     runs-on: self-hosted
 
     steps:
-      - name: Print a greeting
-        run: echo "Hello, world! Your GitHub Action is working perfectly."
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Check system details
+      - name: Stop and Clean Existing Containers
         run: |
-          echo "Current runner OS:"
-          uname -a
-          echo "Current directory contents:"
-          ls -la
+          echo "Cleaning up any old running instances..."
+          # Stops the container if it is running, and ignores errors if it doesn't exist
+          docker stop node-app-instance || true
+          docker rm node-app-instance || true
+
+      - name: Build Docker Image
+        run: |
+          echo "Building the new Docker image..."
+          docker build -t local-node-app:latest .
+
+      - name: Run Docker Container
+        run: |
+          echo "Launching the container on port 3000..."
+          # -d runs in background, -p maps host port 3000 to container port 3000
+          docker run -d --name node-app-instance -p 3000:3000 local-node-app:latest
+
+      - name: Verify Running Status
+        run: |
+          echo "Current running containers:"
+          docker ps
 
