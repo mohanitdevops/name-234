@@ -9,7 +9,7 @@ on:
 jobs:
   Hello-Job:
     # Environment: Runs on GitHub's cloud-hosted Linux machine
-    runs-on: mohan-self
+    runs-on: self-hosted
 
     steps:
       - name: Print a greeting
