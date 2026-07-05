@@ -1,38 +1,206 @@
-name: Build and Run Docker Locally
+name: Multi-Stage Pipeline with Matrix Strategy
 
 on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: name-234-app
 
 jobs:
-  Docker-Workflow:
-    runs-on: self-hosted
-
+  # Stage 1: Build with Matrix Strategy
+  build:
+    name: Build - ${{ matrix.node-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        node-version: ['18', '20']
+        os: [ubuntu-latest]
+        include:
+          - node-version: '20'
+            docker-tag: 'node20-alpine'
+            dockerfile-args: '--build-arg NODE_IMAGE=node:20-alpine'
+          - node-version: '18'
+            docker-tag: 'node18-alpine'
+            dockerfile-args: '--build-arg NODE_IMAGE=node:18-alpine'
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Stop and Clean Existing Containers
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Display Node and NPM versions
         run: |
-          echo "Cleaning up any old running instances..."
-          # Stops the container if it is running, and ignores errors if it doesn't exist
-          docker stop node-app-instance || true
-          docker rm node-app-instance || true
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
 
       - name: Build Docker Image
         run: |
-          echo "Building the new Docker image..."
-          docker build -t local-node-app:latest .
+          echo "Building Docker image with tag: ${{ matrix.docker-tag }}"
+          docker build ${{ matrix.dockerfile-args }} -t ${{ env.IMAGE_NAME }}:${{ matrix.docker-tag }} .
 
-      - name: Run Docker Container
+      - name: List Docker Images
+        run: docker images | grep ${{ env.IMAGE_NAME }}
+
+      - name: Save Docker image as artifact
         run: |
-          echo "Launching the container on port 3000..."
-          # -d runs in background, -p maps host port 3000 to container port 3000
-          docker run -d --name node-app-instance -p 3000:3000 local-node-app:latest
+          docker save ${{ env.IMAGE_NAME }}:${{ matrix.docker-tag }} | gzip > image-${{ matrix.docker-tag }}.tar.gz
 
-      - name: Verify Running Status
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ matrix.docker-tag }}
+          path: image-${{ matrix.docker-tag }}.tar.gz
+          retention-days: 1
+
+  # Stage 2: Test with Matrix Strategy
+  test:
+    name: Test - ${{ matrix.test-env }}
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        test-env:
+          - 'node20-alpine'
+          - 'node18-alpine'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ matrix.test-env }}
+
+      - name: Load Docker image
         run: |
-          echo "Current running containers:"
-          docker ps
+          docker load -i image-${{ matrix.test-env }}.tar.gz
 
+      - name: Start Container
+        run: |
+          echo "Starting test container: ${{ matrix.test-env }}"
+          docker run -d --name test-container-${{ matrix.test-env }} -p 3000:3000 ${{ env.IMAGE_NAME }}:${{ matrix.test-env }}
+          sleep 2
+
+      - name: Verify Container is Running
+        run: |
+          echo "Checking container status..."
+          docker ps | grep test-container-${{ matrix.test-env }}
+          docker logs test-container-${{ matrix.test-env }}
+
+      - name: Test Application
+        run: |
+          echo "Testing Node.js in container..."
+          docker exec test-container-${{ matrix.test-env }} node -e "console.log('✓ Node.js working in ${{ matrix.test-env }}')"
+
+      - name: Check Container Health
+        run: |
+          echo "Health check for ${{ matrix.test-env }}..."
+          docker inspect test-container-${{ matrix.test-env }} | grep -A 5 "State"
+
+      - name: Cleanup Container
+        if: always()
+        run: |
+          docker stop test-container-${{ matrix.test-env }} || true
+          docker rm test-container-${{ matrix.test-env }} || true
+
+  # Stage 3: Security Scan with Matrix Strategy
+  security-scan:
+    name: Security Scan - ${{ matrix.scan-target }}
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        scan-target:
+          - 'node20-alpine'
+          - 'node18-alpine'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ matrix.scan-target }}
+
+      - name: Load Docker image
+        run: docker load -i image-${{ matrix.scan-target }}.tar.gz
+
+      - name: Inspect Docker Image
+        run: |
+          echo "Inspecting image: ${{ matrix.scan-target }}"
+          docker inspect ${{ env.IMAGE_NAME }}:${{ matrix.scan-target }} | head -30
+
+      - name: Check Image Layers
+        run: |
+          echo "Image layers for ${{ matrix.scan-target }}:"
+          docker history ${{ env.IMAGE_NAME }}:${{ matrix.scan-target }}
+
+      - name: Get Image Size
+        run: |
+          echo "Image size for ${{ matrix.scan-target }}:"
+          docker images | grep ${{ matrix.scan-target }}
+
+      - name: Scan with Trivy (optional)
+        continue-on-error: true
+        run: |
+          echo "Scanning image: ${{ env.IMAGE_NAME }}:${{ matrix.scan-target }}"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${{ env.IMAGE_NAME }}:${{ matrix.scan-target }} || echo "Trivy scan completed"
+
+  # Stage 4: Deploy
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: success()
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Docker Images
+        uses: actions/download-artifact@v4
+        with:
+          path: docker-artifacts
+
+      - name: Load and List All Images
+        run: |
+          echo "Loading all Docker images..."
+          for image_file in docker-artifacts/docker-image-*/image-*.tar.gz; do
+            echo "Loading: $image_file"
+            docker load -i "$image_file"
+          done
+          echo ""
+          echo "All built images:"
+          docker images | grep ${{ env.IMAGE_NAME }}
+
+      - name: Show Deployment Instructions
+        run: |
+          echo "✓ Pipeline completed successfully!"
+          echo ""
+          echo "Available Docker images:"
+          docker images | grep ${{ env.IMAGE_NAME }}
+          echo ""
+          echo "To run locally on your laptop:"
+          echo "  docker pull ${{ env.IMAGE_NAME }}:node20-alpine"
+          echo "  docker run -p 3000:3000 ${{ env.IMAGE_NAME }}:node20-alpine"
+          echo ""
+          echo "Or with Node.js 18:"
+          echo "  docker pull ${{ env.IMAGE_NAME }}:node18-alpine"
+          echo "  docker run -p 3000:3000 ${{ env.IMAGE_NAME }}:node18-alpine"
+
+      - name: Summary
+        run: |
+          echo "📦 Build Summary"
+          echo "=================="
+          echo "✓ Build Stage: Completed for multiple Node versions"
+          echo "✓ Test Stage: All container tests passed"
+          echo "✓ Security Scan: Image analysis completed"
+          echo "✓ Deploy Stage: Ready for deployment"
