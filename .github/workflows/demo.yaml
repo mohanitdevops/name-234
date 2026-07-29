@@ -1,6 +1,7 @@
 name: Multi-Stage Pipeline with Matrix Strategy
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
